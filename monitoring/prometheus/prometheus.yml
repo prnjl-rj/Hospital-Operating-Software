@@ -1,0 +1,28 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    system: "hos-enterprise"
+    environment: "development"
+
+rule_files:
+  - "/etc/prometheus/alert-rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "alertmanager:9093"
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: "hos-api-gateway"
+    metrics_path: "/api/v1/metrics"
+    static_configs:
+      - targets: ["host.docker.internal:4000"]
+        labels:
+          service: "api-gateway"
+

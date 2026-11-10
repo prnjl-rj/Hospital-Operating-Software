@@ -1,0 +1,277 @@
+// =============================================================================
+// PRISMA SCHEMA 4: DIAGNOSTICS (LAB, RADIOLOGY, PACS, BLOOD BANK) & PHARMACY / INVENTORY
+// Schema Owner: diagnostics-pharmacy-service (PostgreSQL schema: "diagnostics_pharmacy")
+// Encapsulates Services: [20] Pharmacy, [21] Inventory, [22] Procurement,
+//                        [23] Laboratory, [24] Radiology, [25] PACS Integration,
+//                        [29] Blood Bank
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  output          = "../../../node_modules/.prisma/diagnostics-pharmacy-client"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DIAGNOSTICS_DATABASE_URL")
+  schemas  = ["diagnostics_pharmacy"]
+}
+
+// --- Services 20, 21, 22: Pharmacy, Inventory & Procurement ---
+model MedicationCatalog {
+  id                 String           @id @default(uuid())
+  hospitalId         String
+  skuCode            String           @unique // "MED-AMOX-500"
+  genericName        String
+  brandName          String
+  dosageForm         String           // TABLET | CAPSULE | INJECTION | SYRUP | INFUSION
+  strength           String
+  unitPriceMinor     BigInt
+  reorderLevel       Int              @default(100)
+  isControlledDrug   Boolean          @default(false)
+  createdAt          DateTime         @default(now())
+
+  batches            InventoryBatch[]
+
+  @@index([hospitalId, genericName])
+  @@schema("diagnostics_pharmacy")
+}
+
+model InventoryBatch {
+  id                String            @id @default(uuid())
+  hospitalId        String
+  medicationId      String
+  batchNumber       String
+  storeCode         String            @default("CENTRAL_PHARMACY")
+  quantityOnHand    Int
+  expiryDate        DateTime
+  receivedAt        DateTime          @default(now())
+
+  medication        MedicationCatalog @relation(fields: [medicationId], references: [id], onDelete: Restrict)
+
+  @@unique([medicationId, batchNumber, storeCode])
+  @@index([expiryDate, quantityOnHand])
+  @@schema("diagnostics_pharmacy")
+}
+
+model PharmacyDispenseOrder {
+  id                  String                 @id @default(uuid())
+  hospitalId          String
+  dispenseOrderNumber String                 @unique // "DISP-2026-000001"
+  prescriptionRefId   String                 @unique
+  patientRefId        String
+  doctorRefId         String
+  status              String                 @default("PENDING_DISPENSE") // PENDING_DISPENSE | DISPENSED | PARTIAL | CANCELLED
+  dispensedByUserId   String?
+  dispensedAt         DateTime?
+  createdAt           DateTime               @default(now())
+
+  items               PharmacyDispenseItem[]
+
+  @@index([hospitalId, status])
+  @@schema("diagnostics_pharmacy")
+}
+
+model PharmacyDispenseItem {
+  id                 String                @id @default(uuid())
+  dispenseOrderId    String
+  medicationCode     String
+  medicationName     String
+  batchNumber        String?
+  quantityRequested  Int
+  quantityDispensed  Int                   @default(0)
+  unitPriceMinor     BigInt
+
+  dispenseOrder      PharmacyDispenseOrder @relation(fields: [dispenseOrderId], references: [id], onDelete: Cascade)
+
+  @@schema("diagnostics_pharmacy")
+}
+
+model Vendor {
+  id             String          @id @default(uuid())
+  hospitalId     String
+  vendorCode     String          @unique
+  name           String
+  drugLicenseNo  String
+  contactEmail   String
+  phone          String
+  isActive       Boolean         @default(true)
+
+  purchaseOrders PurchaseOrder[]
+
+  @@schema("diagnostics_pharmacy")
+}
+
+model PurchaseOrder {
+  id              String   @id @default(uuid())
+  hospitalId      String
+  poNumber        String   @unique // "PO-2026-0001"
+  vendorId        String
+  totalAmountMinor BigInt
+  status          String   @default("ISSUED") // ISSUED | GRN_COMPLETED | CANCELLED
+  createdByUserId String
+  createdAt       DateTime @default(now())
+
+  vendor          Vendor   @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+
+  @@schema("diagnostics_pharmacy")
+}
+
+// --- Service 23: Laboratory ---
+model LabTestCatalog {
+  id               String   @id @default(uuid())
+  hospitalId       String
+  testCode         String   @unique // "LAB-CBC-01", "LAB-TROP-I"
+  testName         String
+  department       String   // HEMATOLOGY | BIOCHEMISTRY | MICROBIOLOGY | PATHOLOGY
+  sampleType       String   // EDTA_BLOOD | SERUM | URINE | SWAB
+  referenceRange   String
+  unit             String
+  priceMinor       BigInt
+  turnaroundHours  Int      @default(4)
+
+  @@schema("diagnostics_pharmacy")
+}
+
+model LabOrder {
+  id                  String      @id @default(uuid())
+  hospitalId          String
+  orderNumber         String      @unique // "LAB-ORD-2026-000001"
+  encounterRefId      String
+  patientRefId        String
+  orderingDoctorId    String
+  testCode            String
+  testName            String
+  priority            String      @default("ROUTINE") // ROUTINE | STAT_URGENT
+  specimenBarcode     String?     @unique
+  status              String      @default("ORDERED") // ORDERED | SAMPLE_COLLECTED | IN_ANALYZER | RESULT_READY | CANCELLED
+  orderedAt           DateTime    @default(now())
+  sampleCollectedAt   DateTime?
+  completedAt         DateTime?
+
+  results             LabResult[]
+
+  @@index([hospitalId, status, priority])
+  @@index([patientRefId])
+  @@schema("diagnostics_pharmacy")
+}
+
+model LabResult {
+  id                 String   @id @default(uuid())
+  labOrderId         String
+  parameterName      String
+  observedValue      String
+  unit               String
+  referenceRange     String
+  abnormalFlag       String   @default("NORMAL") // NORMAL | HIGH | LOW | CRITICAL_PANIC
+  enteredByTechId    String
+  verifiedByDoctorId String?
+  isFinalized        Boolean  @default(true)
+  verifiedAt         DateTime @default(now())
+
+  labOrder           LabOrder @relation(fields: [labOrderId], references: [id], onDelete: Restrict)
+
+  @@schema("diagnostics_pharmacy")
+}
+
+// --- Service 24: Radiology & Service 25: PACS Integration ---
+model RadiologyOrder {
+  id                 String               @id @default(uuid())
+  hospitalId         String
+  orderNumber        String               @unique // "RAD-ORD-2026-000001"
+  encounterRefId     String
+  patientRefId       String
+  orderingDoctorId   String
+  modality           String               // XRAY | CT | MRI | ULTRASOUND
+  bodyPart           String
+  clinicalIndication String
+  status             String               @default("SCHEDULED") // SCHEDULED | IMAGING_DONE | REPORT_READY
+  priceMinor         BigInt               @default(150000)
+  orderedAt          DateTime             @default(now())
+
+  report             RadiologyReport?
+  dicomStudy         DicomStudyReference?
+
+  @@index([hospitalId, modality, status])
+  @@schema("diagnostics_pharmacy")
+}
+
+model RadiologyReport {
+  id                 String         @id @default(uuid())
+  radiologyOrderId   String         @unique
+  radiologistUserId  String
+  findings           String
+  impression         String
+  isFinalized        Boolean        @default(true)
+  signedAt           DateTime       @default(now())
+
+  radiologyOrder     RadiologyOrder @relation(fields: [radiologyOrderId], references: [id], onDelete: Restrict)
+
+  @@schema("diagnostics_pharmacy")
+}
+
+model DicomStudyReference {
+  id                String         @id @default(uuid())
+  radiologyOrderId  String         @unique
+  studyInstanceUid  String         @unique
+  accessionNumber   String         @unique
+  modality          String
+  orthancStudyId    String?
+  wadoViewerUrl     String
+  seriesCount       Int            @default(1)
+  instancesCount    Int            @default(1)
+  createdAt         DateTime       @default(now())
+
+  radiologyOrder    RadiologyOrder @relation(fields: [radiologyOrderId], references: [id], onDelete: Cascade)
+
+  @@schema("diagnostics_pharmacy")
+}
+
+// --- Service 29: Blood Bank ---
+model BloodUnit {
+  id              String   @id @default(uuid())
+  hospitalId      String
+  bagNumber       String   @unique // "BB-2026-OPOS-001"
+  bloodGroup      String   // A+ | A- | B+ | B- | AB+ | AB- | O+ | O-
+  componentType   String   // PRBC | FFP | PLATELETS | WHOLE_BLOOD
+  volumeMl        Int      @default(350)
+  collectionDate  DateTime
+  expiryDate      DateTime
+  status          String   @default("AVAILABLE") // AVAILABLE | CROSS_MATCHED | ISSUED | DISCARDED
+  issuedToPatientId String?
+
+  @@index([hospitalId, bloodGroup, status])
+  @@schema("diagnostics_pharmacy")
+}
+
+model OutboxEvent {
+  id            String    @id @default(uuid())
+  eventType     String
+  eventVersion  String    @default("1.0")
+  producer      String    @default("diagnostics-pharmacy-service")
+  correlationId String
+  hospitalId    String
+  partitionKey  String
+  payload       Json
+  status        String    @default("PENDING")
+  retryCount    Int       @default(0)
+  lastError     String?
+  occurredAt    DateTime  @default(now())
+  publishedAt   DateTime?
+
+  @@index([status, occurredAt])
+  @@schema("diagnostics_pharmacy")
+}
+
+model ProcessedEvent {
+  id            String   @id @default(uuid())
+  eventId       String
+  consumerGroup String
+  eventType     String
+  processedAt   DateTime @default(now())
+
+  @@unique([eventId, consumerGroup])
+  @@schema("diagnostics_pharmacy")
+}
+

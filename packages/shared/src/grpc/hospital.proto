@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package hospital;
+
+service HospitalCoreGrpcService {
+  rpc VerifyClinicalContext (VerifyClinicalContextRequest) returns (VerifyClinicalContextResponse);
+}
+
+message VerifyClinicalContextRequest {
+  string hospitalId = 1;
+  string patientId = 2;
+  string doctorId = 3;
+}
+
+message VerifyClinicalContextResponse {
+  bool valid = 1;
+  string patientMrn = 2;
+  string patientFullName = 3;
+  string doctorFullName = 4;
+  string departmentId = 5;
+  string errorReason = 6;
+}
+

@@ -1,0 +1,51 @@
+global:
+  environment: production
+  awsRegion: ap-south-1
+  imageRegistry: 000000000000.dkr.ecr.ap-south-1.amazonaws.com/hos-enterprise
+  imageTag: v1.0.0
+
+services:
+  apiGateway:
+    enabled: true
+    port: 4000
+    minReplicas: 3
+    maxReplicas: 15
+  identityService:
+    enabled: true
+    port: 4001
+    minReplicas: 3
+    maxReplicas: 10
+  hospitalCoreService:
+    enabled: true
+    port: 4002
+    minReplicas: 3
+    maxReplicas: 10
+  clinicalEmrService:
+    enabled: true
+    port: 4003
+    minReplicas: 3
+    maxReplicas: 12
+  diagnosticsPharmacyService:
+    enabled: true
+    port: 4004
+    minReplicas: 3
+    maxReplicas: 10
+  operationsBillingService:
+    enabled: true
+    port: 4005
+    minReplicas: 3
+    maxReplicas: 10
+  frontend:
+    enabled: true
+    port: 8080
+    minReplicas: 2
+    maxReplicas: 8
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+

@@ -1,0 +1,392 @@
+// =============================================================================
+// PRISMA SCHEMA 2: HOSPITAL CORE, WORKFORCE, DOCTORS, PATIENTS, APPOINTMENTS, OPD & HR
+// Schema Owner: hospital-core-service (PostgreSQL schema: "hospital_core")
+// Encapsulates Services: [4] Hospital Config, [5] Employee, [6] Doctor, [7] Patient,
+//                        [8] Appointment, [9] OPD, [30] HR & Payroll
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  output          = "../../../node_modules/.prisma/hospital-core-client"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("HOSPITAL_CORE_DATABASE_URL")
+  schemas  = ["hospital_core"]
+}
+
+model Hospital {
+  id                  String       @id @default(uuid())
+  code                String       @unique // e.g., "HOS-MAIN-001"
+  name                String
+  registrationNumber  String       @unique
+  accreditationLevel  String       @default("NABH-JCI-Enterprise")
+  totalBedCapacity    Int          @default(550)
+  addressLine         String
+  city                String
+  state               String
+  country             String       @default("India")
+  postalCode          String
+  contactPhone        String
+  emergencyPhone      String
+  timezone            String       @default("Asia/Kolkata")
+  isActive            Boolean      @default(true)
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  buildings           Building[]
+  departments         Department[]
+  employees           Employee[]
+  doctors             DoctorProfile[]
+  patients            Patient[]
+
+  @@schema("hospital_core")
+}
+
+model Building {
+  id          String   @id @default(uuid())
+  hospitalId  String
+  code        String
+  name        String   // e.g., "Tower A - Main Clinical Block", "Tower B - Emergency & Critical Care"
+  floorsCount Int
+  createdAt   DateTime @default(now())
+
+  hospital    Hospital @relation(fields: [hospitalId], references: [id], onDelete: Restrict)
+  floors      Floor[]
+
+  @@unique([hospitalId, code])
+  @@schema("hospital_core")
+}
+
+model Floor {
+  id          String   @id @default(uuid())
+  buildingId  String
+  floorNumber Int
+  label       String   // e.g., "Floor 2 - Cardiology & Cath Lab"
+  createdAt   DateTime @default(now())
+
+  building    Building @relation(fields: [buildingId], references: [id], onDelete: Restrict)
+
+  @@unique([buildingId, floorNumber])
+  @@schema("hospital_core")
+}
+
+model Department {
+  id              String          @id @default(uuid())
+  hospitalId      String
+  code            String          // e.g., "DEPT-CARDIO", "DEPT-EMERG"
+  name            String
+  specialtyCategory String
+  floorRefId      String?
+  headDoctorId    String?
+  isEmergencyUnit Boolean         @default(false)
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  hospital        Hospital        @relation(fields: [hospitalId], references: [id], onDelete: Restrict)
+  employees       Employee[]
+  doctors         DoctorProfile[]
+  appointments    Appointment[]
+
+  @@unique([hospitalId, code])
+  @@index([hospitalId, isActive])
+  @@schema("hospital_core")
+}
+
+model Employee {
+  id              String             @id @default(uuid())
+  hospitalId      String
+  departmentId    String
+  employeeCode    String             @unique // e.g., "EMP-2026-0001"
+  userRefId       String?            @unique
+  firstName       String
+  lastName        String
+  email           String             @unique
+  phone           String
+  designation     String             // Nurse, Compounder, Pharmacist, Lab Tech, Receptionist, etc.
+  employmentType  String             @default("FULL_TIME")
+  joiningDate     DateTime
+  baseSalaryMinor BigInt             @default(0) // Stored in minor currency units (paise/cents)
+  status          String             @default("ACTIVE")
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  hospital        Hospital           @relation(fields: [hospitalId], references: [id], onDelete: Restrict)
+  department      Department         @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  shiftRosters    ShiftRoster[]
+  attendances     AttendanceRecord[]
+  leaveRequests   LeaveRequest[]
+  payslips        Payslip[]
+
+  @@index([hospitalId, departmentId, status])
+  @@schema("hospital_core")
+}
+
+model ShiftRoster {
+  id          String   @id @default(uuid())
+  hospitalId  String
+  employeeId  String
+  shiftDate   DateTime
+  shiftType   String   // MORNING | EVENING | NIGHT | ON_CALL
+  wardRefCode String?
+  createdAt   DateTime @default(now())
+
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, shiftDate, shiftType])
+  @@schema("hospital_core")
+}
+
+model DoctorProfile {
+  id                      String                   @id @default(uuid())
+  hospitalId              String
+  departmentId            String
+  employeeRefId           String?                  @unique
+  userRefId               String?                  @unique
+  doctorCode              String                   @unique // e.g., "DOC-2026-001"
+  fullName                String
+  medicalLicenseNumber    String                   @unique
+  specialization          String
+  qualification           String
+  consultationFeeMinor    BigInt                   @default(80000) // e.g. 800.00 INR
+  followupFeeMinor        BigInt                   @default(40000)
+  roomNumber              String
+  isAvailableForOpd       Boolean                  @default(true)
+  isAvailableForEmergency Boolean                  @default(true)
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+
+  hospital                Hospital                 @relation(fields: [hospitalId], references: [id], onDelete: Restrict)
+  department              Department               @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  scheduleTemplates       DoctorScheduleTemplate[]
+  appointments            Appointment[]
+  opdTokens               OpdQueueToken[]
+
+  @@index([hospitalId, departmentId])
+  @@schema("hospital_core")
+}
+
+model DoctorScheduleTemplate {
+  id                  String        @id @default(uuid())
+  doctorId            String
+  dayOfWeek           Int           // 0 = Sunday .. 6 = Saturday
+  startTime           String        // "09:00"
+  endTime             String        // "13:00"
+  slotDurationMinutes Int           @default(15)
+  maxPatients         Int           @default(20)
+  isActive            Boolean       @default(true)
+
+  doctor              DoctorProfile @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+
+  @@unique([doctorId, dayOfWeek, startTime])
+  @@schema("hospital_core")
+}
+
+model Patient {
+  id                  String                    @id @default(uuid())
+  hospitalId          String
+  mrn                 String                    @unique // "HOS-2026-000001"
+  firstName           String
+  lastName            String
+  dateOfBirth         DateTime
+  gender              String
+  bloodGroup          String?
+  phone               String
+  email               String?
+  addressLine         String
+  city                String
+  state               String
+  postalCode          String
+  isSyntheticTestRecord Boolean                 @default(true) // Enforces Rule 13 & Rule 26
+  status              String                    @default("ACTIVE")
+  registeredByUserId  String
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  deletedAt           DateTime?
+
+  hospital            Hospital                  @relation(fields: [hospitalId], references: [id], onDelete: Restrict)
+  identifiers         PatientIdentifier[]
+  emergencyContacts   PatientEmergencyContact[]
+  appointments        Appointment[]
+  opdTokens           OpdQueueToken[]
+
+  @@index([hospitalId, mrn])
+  @@index([phone])
+  @@index([lastName, firstName])
+  @@schema("hospital_core")
+}
+
+model PatientIdentifier {
+  id              String   @id @default(uuid())
+  patientId       String
+  identifierType  String   // ABHA_HEALTH_ID | HOSPITAL_LEGACY_ID | INSURANCE_MEMBER_ID
+  identifierValue String
+  issuedBy        String?
+  verified        Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  patient         Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@unique([identifierType, identifierValue])
+  @@schema("hospital_core")
+}
+
+model PatientEmergencyContact {
+  id           String  @id @default(uuid())
+  patientId    String
+  contactName  String
+  relationship String
+  phone        String
+  isPrimary    Boolean @default(true)
+
+  patient      Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@schema("hospital_core")
+}
+
+model Appointment {
+  id                 String        @id @default(uuid())
+  hospitalId         String
+  appointmentNumber  String        @unique // "APT-2026-000001"
+  patientId          String
+  doctorId           String
+  departmentId       String
+  scheduledStart     DateTime
+  scheduledEnd       DateTime
+  visitType          String        @default("OPD_CONSULTATION") // OPD_CONSULTATION | FOLLOW_UP | EMERGENCY_WALKIN
+  status             String        @default("BOOKED") // BOOKED | CHECKED_IN | IN_CONSULTATION | COMPLETED | CANCELLED | NO_SHOW
+  reasonForVisit     String
+  cancellationReason String?
+  bookedByUserId     String
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  patient            Patient       @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor             DoctorProfile @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+  department         Department    @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  opdToken           OpdQueueToken?
+
+  @@unique([doctorId, scheduledStart]) // Prevents double-booking a doctor at the exact same slot
+  @@index([hospitalId, scheduledStart, status])
+  @@index([patientId])
+  @@schema("hospital_core")
+}
+
+model OpdQueueToken {
+  id              String        @id @default(uuid())
+  hospitalId      String
+  appointmentId   String        @unique
+  patientId       String
+  doctorId        String
+  tokenNumber     Int
+  queueDate       DateTime
+  priority        String        @default("NORMAL") // NORMAL | SENIOR_CITIZEN | URGENT
+  status          String        @default("WAITING_VITALS") // WAITING_VITALS | WAITING_DOCTOR | IN_CONSULTATION | COMPLETED | SKIPPED
+  checkedInAt     DateTime      @default(now())
+  calledAt        DateTime?
+  completedAt     DateTime?
+
+  appointment     Appointment   @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  patient         Patient       @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  doctor          DoctorProfile @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+
+  @@unique([doctorId, queueDate, tokenNumber])
+  @@index([hospitalId, doctorId, status])
+  @@schema("hospital_core")
+}
+
+// --- Service 30: HR & Payroll ---
+model AttendanceRecord {
+  id          String    @id @default(uuid())
+  employeeId  String
+  workDate    DateTime
+  checkInAt   DateTime
+  checkOutAt  DateTime?
+  status      String    @default("PRESENT") // PRESENT | HALF_DAY | ON_LEAVE | ABSENT
+
+  employee    Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, workDate])
+  @@schema("hospital_core")
+}
+
+model LeaveRequest {
+  id           String    @id @default(uuid())
+  employeeId   String
+  leaveType    String    // ANNUAL | SICK | EMERGENCY
+  startDate    DateTime
+  endDate      DateTime
+  reason       String
+  status       String    @default("PENDING") // PENDING | APPROVED | REJECTED
+  approvedById String?
+  createdAt    DateTime  @default(now())
+
+  employee     Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@schema("hospital_core")
+}
+
+model PayrollRun {
+  id              String    @id @default(uuid())
+  hospitalId      String
+  monthYear       String    @unique // e.g., "2026-11"
+  totalEmployees  Int
+  totalPayoutMinor BigInt
+  status          String    @default("PROCESSED")
+  processedById   String
+  processedAt     DateTime  @default(now())
+
+  payslips        Payslip[]
+
+  @@schema("hospital_core")
+}
+
+model Payslip {
+  id                String     @id @default(uuid())
+  payrollRunId      String
+  employeeId        String
+  grossSalaryMinor  BigInt
+  deductionsMinor   BigInt
+  netSalaryMinor    BigInt
+  generatedAt       DateTime   @default(now())
+
+  payrollRun        PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  employee          Employee   @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@unique([payrollRunId, employeeId])
+  @@schema("hospital_core")
+}
+
+model OutboxEvent {
+  id            String    @id @default(uuid())
+  eventType     String
+  eventVersion  String    @default("1.0")
+  producer      String    @default("hospital-core-service")
+  correlationId String
+  hospitalId    String
+  partitionKey  String
+  payload       Json
+  status        String    @default("PENDING")
+  retryCount    Int       @default(0)
+  lastError     String?
+  occurredAt    DateTime  @default(now())
+  publishedAt   DateTime?
+
+  @@index([status, occurredAt])
+  @@schema("hospital_core")
+}
+
+model ProcessedEvent {
+  id            String   @id @default(uuid())
+  eventId       String
+  consumerGroup String
+  eventType     String
+  processedAt   DateTime @default(now())
+
+  @@unique([eventId, consumerGroup])
+  @@schema("hospital_core")
+}
+

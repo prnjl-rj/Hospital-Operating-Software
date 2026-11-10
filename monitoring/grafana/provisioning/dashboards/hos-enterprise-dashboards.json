@@ -1,0 +1,92 @@
+{
+  "uid": "hos-master-10-dashboards",
+  "title": "HOS Enterprise — 10-Domain Hospital Operations, Clinical, Kafka, Redis, DB & Security Suite",
+  "tags": ["hos", "hospital", "microservices", "kafka", "redis", "postgresql", "security"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "1. Executive Hospital Operations — Bed Occupancy Ratio",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "targets": [{ "expr": "hos_bed_occupancy_ratio", "refId": "A" }]
+    },
+    {
+      "id": 2,
+      "title": "2. Microservice Health — Request Rate by Service (req/s)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "targets": [{ "expr": "sum by (service) (rate(hos_http_requests_total[5m]))", "refId": "A" }]
+    },
+    {
+      "id": 3,
+      "title": "3. API Gateway Performance — P95 HTTP Latency (Seconds)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, service) (rate(hos_http_request_duration_seconds_bucket[5m])))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "4. Clinical & Operational Activity — Critical Lab Result Alerts",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "targets": [{ "expr": "sum(hos_critical_lab_alerts_total)", "refId": "A" }]
+    },
+    {
+      "id": 5,
+      "title": "5. Database Performance — Transactional Outbox Pending Events by Schema",
+      "type": "bargauge",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 6 },
+      "targets": [{ "expr": "hos_outbox_pending_events", "refId": "A" }]
+    },
+    {
+      "id": 6,
+      "title": "6. Kafka Health & Consumer Lag — Dead-Letter Queue (.dlq) Events",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 6 },
+      "targets": [{ "expr": "sum by (topic) (hos_kafka_dlq_events_total)", "refId": "A" }]
+    },
+    {
+      "id": 7,
+      "title": "7. Redis & BullMQ Queue Performance — Background Jobs Processed",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 6 },
+      "targets": [{ "expr": "sum by (queue, status) (rate(hos_bullmq_jobs_processed_total[5m]))", "refId": "A" }]
+    },
+    {
+      "id": 8,
+      "title": "8. Infrastructure & Node.js Runtime — Heap Memory & Event Loop Lag",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 12 },
+      "targets": [{ "expr": "hos_node_nodejs_eventloop_lag_seconds", "refId": "A" }]
+    },
+    {
+      "id": 9,
+      "title": "9. Security & Authentication — 401/403 Auth & RBAC Rejections",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum by (status_code, route) (rate(hos_http_errors_total{status_code=~\"401|403\"}[5m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "10. Alert Overview — Active Firing Prometheus Alerts",
+      "type": "table",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 12 },
+      "targets": [{ "expr": "ALERTS{alertstate=\"firing\"}", "refId": "A" }]
+    }
+  ]
+}
+

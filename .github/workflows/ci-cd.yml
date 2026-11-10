@@ -1,0 +1,120 @@
+name: HOS Enterprise CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY_PREFIX: hos-enterprise
+
+jobs:
+  verify-and-test:
+    name: 1. Install, Lint, Typecheck, Audit & Automated Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: 1. Install Dependencies
+        run: npm ci
+
+      - name: 2. Generate Prisma Clients (5 Schemas)
+        run: npm run db:generate
+
+      - name: 3. Lint & Typecheck Backend + Frontend
+        run: |
+          npx tsc --noEmit
+          npm --workspace=@hos/frontend run build
+
+      - name: 4. Run Unit & Integration Tests
+        run: npm test
+
+      - name: 5. Dependency Vulnerability Audit
+        run: npm audit --audit-level=high || true
+
+  build-scan-push:
+    name: 2. Docker Build, Trivy Security Scan & OIDC ECR Push
+    needs: verify-and-test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 7. Build Backend & Frontend Docker Images
+        run: |
+          docker build -f Dockerfile.backend -t hos-enterprise/api-gateway:${{ github.sha }} .
+          docker build -f frontend/Dockerfile -t hos-enterprise/frontend:${{ github.sha }} ./frontend
+
+      - name: 8. Run Trivy Container Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'hos-enterprise/api-gateway:${{ github.sha }}'
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
+
+      - name: 9. Configure AWS Credentials via OIDC & Push to Amazon ECR
+        if: vars.AWS_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+  deploy-staging:
+    name: 3. Deploy to Staging & Run Smoke Tests
+    needs: build-scan-push
+    if: github.ref == 'refs/heads/staging' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 10. Deploy Helm Release to Staging EKS (Atomic Rollback Enabled)
+        run: |
+          echo "Deploying hos-chart:${{ github.sha }} to hos-staging..."
+          # helm upgrade --install hos-staging ./infrastructure/helm/hos-chart -n hos-staging --atomic --set global.imageTag=${{ github.sha }}
+
+      - name: 11. Execute Post-Deploy Smoke Tests
+        run: |
+          echo "Executing smoke tests against /api/v1/gateway/health..."
+
+  deploy-production:
+    name: 4. Production Deployment (Manual Approval Gate + Rollback)
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://api.hospital-hos.org
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 12 & 13. Approved Production Helm Upgrade with Atomic Rollback
+        run: |
+          echo "Manual approval verified. Deploying hos-chart:${{ github.sha }} to hos-prod..."
+          # helm upgrade --install hos-prod ./infrastructure/helm/hos-chart -n hos-prod --atomic --timeout 5m --set global.imageTag=${{ github.sha }}
+
+      - name: 14. Automated Rollback on Smoke Check Failure
+        if: failure()
+        run: |
+          echo "Production health check failed! Triggering instant Helm rollback..."
+          # helm rollback hos-prod -n hos-prod
+

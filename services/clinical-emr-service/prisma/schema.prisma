@@ -1,0 +1,428 @@
+// =============================================================================
+// PRISMA SCHEMA 3: CLINICAL, EMR, PRESCRIPTIONS, NURSING, COMPOUNDER, IPD, BEDS, ER, OT & ICU
+// Schema Owner: clinical-emr-service (PostgreSQL schema: "clinical")
+// Encapsulates Services: [10] Encounter, [11] Clinical/EMR, [12] Prescription,
+//                        [13] Nursing, [14] Compounder, [15] IPD, [16] Bed Management,
+//                        [17] Emergency, [18] OT, [19] ICU
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  output          = "../../../node_modules/.prisma/clinical-client"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("CLINICAL_DATABASE_URL")
+  schemas  = ["clinical"]
+}
+
+model Encounter {
+  id                String            @id @default(uuid())
+  hospitalId        String
+  encounterNumber   String            @unique // "ENC-2026-000001"
+  patientRefId      String
+  patientMrn        String
+  doctorRefId       String
+  departmentRefId   String
+  appointmentRefId  String?           @unique
+  encounterType     String            // OPD | IPD | EMERGENCY | ICU
+  status            String            @default("IN_PROGRESS") // PLANNED | IN_PROGRESS | COMPLETED | SIGNED | CANCELLED
+  startedAt         DateTime          @default(now())
+  endedAt           DateTime?
+  signedAt          DateTime?
+  signedByDoctorId  String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  clinicalNotes     ClinicalNote[]
+  vitalSigns        VitalSignRecord[]
+  diagnoses         DiagnosisRecord[]
+  prescriptions     Prescription[]
+  admission         Admission?
+
+  @@index([hospitalId, patientRefId, startedAt])
+  @@index([doctorRefId, status])
+  @@schema("clinical")
+}
+
+// Rule 27 & Rule 28: Signed clinical notes are immutable; updates require ClinicalNoteAddendum
+model ClinicalNote {
+  id                String                 @id @default(uuid())
+  hospitalId        String
+  encounterId       String
+  patientRefId      String
+  authorDoctorId    String
+  chiefComplaint    String
+  historyOfPresentIllness String
+  physicalExamFindings    String?
+  assessmentAndPlan String
+  status            String                 @default("DRAFT") // DRAFT | SIGNED
+  isImmutable       Boolean                @default(false)
+  contentHash       String?                // SHA-256 hash computed upon doctor signature
+  signedAt          DateTime?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  encounter         Encounter              @relation(fields: [encounterId], references: [id], onDelete: Restrict)
+  addendums         ClinicalNoteAddendum[]
+
+  @@index([encounterId])
+  @@index([patientRefId])
+  @@schema("clinical")
+}
+
+model ClinicalNoteAddendum {
+  id             String       @id @default(uuid())
+  clinicalNoteId String
+  authorUserId   String
+  reason         String
+  addendumText   String
+  contentHash    String
+  createdAt      DateTime     @default(now())
+
+  clinicalNote   ClinicalNote @relation(fields: [clinicalNoteId], references: [id], onDelete: Restrict)
+
+  @@schema("clinical")
+}
+
+model VitalSignRecord {
+  id                   String    @id @default(uuid())
+  encounterId          String
+  patientRefId         String
+  recordedByUserId     String
+  recordedByRole       String    // NURSE | COMPOUNDER | DOCTOR
+  systolicBpMmHg       Int?
+  diastolicBpMmHg      Int?
+  heartRateBpm         Int?
+  respiratoryRateRpm   Int?
+  temperatureCelsius   Float?
+  spo2Percent          Int?
+  weightKg             Float?
+  heightCm             Float?
+  bloodGlucoseMgDl     Float?
+  recordedAt           DateTime  @default(now())
+
+  encounter            Encounter @relation(fields: [encounterId], references: [id], onDelete: Restrict)
+
+  @@index([encounterId, recordedAt])
+  @@schema("clinical")
+}
+
+model DiagnosisRecord {
+  id             String    @id @default(uuid())
+  encounterId    String
+  patientRefId   String
+  icd10Code      String
+  description    String
+  diagnosisType  String    @default("PRIMARY") // PRIMARY | SECONDARY | PROVISIONAL
+  recordedById   String
+  createdAt      DateTime  @default(now())
+
+  encounter      Encounter @relation(fields: [encounterId], references: [id], onDelete: Restrict)
+
+  @@schema("clinical")
+}
+
+model PatientAllergy {
+  id              String   @id @default(uuid())
+  hospitalId      String
+  patientRefId    String
+  allergenName    String
+  allergenType    String   // DRUG | FOOD | ENVIRONMENTAL
+  reactionSummary String
+  severity        String   // MILD | MODERATE | SEVERE | LIFE_THREATENING
+  recordedById    String
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  @@index([patientRefId, isActive])
+  @@schema("clinical")
+}
+
+model Prescription {
+  id                 String             @id @default(uuid())
+  hospitalId         String
+  prescriptionNumber String             @unique // "RX-2026-000001"
+  encounterId        String
+  patientRefId       String
+  doctorRefId        String
+  status             String             @default("SIGNED") // DRAFT | SIGNED | DISPENSED | CANCELLED
+  notes              String?
+  isImmutable        Boolean            @default(true)
+  signedAt           DateTime           @default(now())
+  createdAt          DateTime           @default(now())
+
+  encounter          Encounter          @relation(fields: [encounterId], references: [id], onDelete: Restrict)
+  items              PrescriptionItem[]
+
+  @@index([hospitalId, patientRefId])
+  @@schema("clinical")
+}
+
+model PrescriptionItem {
+  id                 String       @id @default(uuid())
+  prescriptionId     String
+  medicationCode     String
+  medicationName     String
+  dosageStrength     String       // e.g., "500mg"
+  route              String       // ORAL | IV | IM | SC | TOPICAL
+  frequency          String       // e.g., "TID (3 times daily)"
+  durationDays       Int
+  quantityPrescribed Int
+  instructions       String?
+  requiresCompounder Boolean      @default(false)
+
+  prescription       Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+
+  @@schema("clinical")
+}
+
+// --- Service 16: Bed Management & Service 15: IPD ---
+model Ward {
+  id           String   @id @default(uuid())
+  hospitalId   String
+  code         String   @unique // "WARD-GEN-A", "WARD-ICU-1", "WARD-MAT-1"
+  name         String
+  wardType     String   // GENERAL | SEMI_PRIVATE | PRIVATE | ICU | NICU | EMERGENCY | ISOLATION
+  floorRefCode String
+  totalBeds    Int
+  dailyTariffMinor BigInt @default(250000)
+  createdAt    DateTime @default(now())
+
+  beds         Bed[]
+
+  @@index([hospitalId, wardType])
+  @@schema("clinical")
+}
+
+model Bed {
+  id                 String                 @id @default(uuid())
+  hospitalId         String
+  wardId             String
+  bedNumber          String                 @unique // "BED-GEN-A-101"
+  roomNumber         String
+  bedType            String                 // STANDARD | FOWLER | ICU_VENTILATOR | ER_TROLLEY
+  hasOxygenSupply    Boolean                @default(true)
+  hasVentilator      Boolean                @default(false)
+  status             String                 @default("AVAILABLE") // AVAILABLE | OCCUPIED | RESERVED | CLEANING | MAINTENANCE
+  currentPatientId   String?
+  currentAdmissionId String?
+  updatedAt          DateTime               @updatedAt
+
+  ward               Ward                   @relation(fields: [wardId], references: [id], onDelete: Restrict)
+  allocations        BedAllocationHistory[]
+
+  @@index([hospitalId, status, wardId])
+  @@schema("clinical")
+}
+
+model Admission {
+  id                  String              @id @default(uuid())
+  hospitalId          String
+  admissionNumber     String              @unique // "IPD-2026-000001"
+  encounterId         String              @unique
+  patientRefId        String
+  attendingDoctorId   String
+  wardId              String
+  bedId               String
+  admissionReason     String
+  status              String              @default("ADMITTED") // ADMITTED | DISCHARGE_PENDING_BILLING | DISCHARGED
+  billingCleared      Boolean             @default(false)
+  admittedAt          DateTime            @default(now())
+  dischargedAt        DateTime?
+
+  encounter           Encounter           @relation(fields: [encounterId], references: [id], onDelete: Restrict)
+  roundNotes          InpatientRoundNote[]
+  dischargeSummary    DischargeSummary?
+  nursingTasks        NursingTask[]
+  marRecords          MedicationAdministrationRecord[]
+
+  @@index([hospitalId, status])
+  @@index([patientRefId])
+  @@schema("clinical")
+}
+
+model BedAllocationHistory {
+  id          String    @id @default(uuid())
+  bedId       String
+  admissionId String
+  patientRefId String
+  allocatedBy String
+  allocatedAt DateTime  @default(now())
+  releasedAt  DateTime?
+
+  bed         Bed       @relation(fields: [bedId], references: [id], onDelete: Restrict)
+
+  @@index([bedId, allocatedAt])
+  @@schema("clinical")
+}
+
+model InpatientRoundNote {
+  id          String    @id @default(uuid())
+  admissionId String
+  doctorRefId String
+  progressNote String
+  planUpdates String
+  recordedAt  DateTime  @default(now())
+
+  admission   Admission @relation(fields: [admissionId], references: [id], onDelete: Cascade)
+
+  @@schema("clinical")
+}
+
+model DischargeSummary {
+  id                     String    @id @default(uuid())
+  admissionId            String    @unique
+  patientRefId           String
+  authorDoctorId         String
+  courseInHospital       String
+  conditionAtDischarge   String
+  dischargeMedications   String
+  followUpInstructions   String
+  signedAt               DateTime  @default(now())
+
+  admission              Admission @relation(fields: [admissionId], references: [id], onDelete: Restrict)
+
+  @@schema("clinical")
+}
+
+// --- Service 13: Nursing & Service 14: Compounder ---
+model NursingTask {
+  id              String    @id @default(uuid())
+  hospitalId      String
+  admissionId     String
+  patientRefId    String
+  assignedNurseId String?
+  taskType        String    // VITAL_CHECK | MEDICATION_ADMIN | WOUND_CARE | SHIFT_HANDOVER
+  description     String
+  dueAt           DateTime
+  status          String    @default("PENDING") // PENDING | COMPLETED
+  completedAt     DateTime?
+  completedById   String?
+
+  admission       Admission @relation(fields: [admissionId], references: [id], onDelete: Cascade)
+
+  @@index([hospitalId, status, dueAt])
+  @@schema("clinical")
+}
+
+model MedicationAdministrationRecord {
+  id                 String    @id @default(uuid())
+  admissionId        String
+  prescriptionRefId  String
+  patientRefId       String
+  medicationName     String
+  doseAdministered   String
+  route              String
+  administeredById   String
+  administeredAt     DateTime  @default(now())
+  patientResponse    String?
+
+  admission          Admission @relation(fields: [admissionId], references: [id], onDelete: Cascade)
+
+  @@schema("clinical")
+}
+
+model CompounderTask {
+  id                 String    @id @default(uuid())
+  hospitalId         String
+  patientRefId       String
+  prescriptionRefId  String?
+  procedureType      String    // INJECTION | WOUND_DRESSING | NEBULIZATION | SUTURE_REMOVAL
+  instructions       String
+  status             String    @default("QUEUED") // QUEUED | IN_PROGRESS | COMPLETED
+  performedByUserId  String?
+  completedAt        DateTime?
+  createdAt          DateTime  @default(now())
+
+  @@index([hospitalId, status])
+  @@schema("clinical")
+}
+
+// --- Service 17: Emergency, Service 18: OT, Service 19: ICU ---
+model EmergencyCase {
+  id               String   @id @default(uuid())
+  hospitalId       String
+  erNumber         String   @unique // "ER-2026-00001"
+  patientRefId     String?
+  unknownPatientAlias String?
+  triageCategory   String   // RED_IMMEDIATE | YELLOW_URGENT | GREEN_NON_URGENT | BLACK_DECEASED
+  chiefComplaint   String
+  traumaBayNumber  String?
+  attendingDoctorId String?
+  status           String   @default("ACTIVE_ER") // ACTIVE_ER | ADMITTED_TO_IPD |ADMITTED_TO_ICU | DISCHARGED
+  arrivalAt        DateTime @default(now())
+
+  @@index([hospitalId, triageCategory, status])
+  @@schema("clinical")
+}
+
+model SurgerySchedule {
+  id                 String   @id @default(uuid())
+  hospitalId         String
+  otRoomCode         String   // "OT-1-CARDIAC", "OT-2-ORTHO"
+  patientRefId       String
+  admissionRefId     String?
+  leadSurgeonId      String
+  anesthetistId      String
+  procedureName      String
+  scheduledStart     DateTime
+  scheduledEnd       DateTime
+  whoChecklistPassed Boolean  @default(false)
+  status             String   @default("SCHEDULED") // SCHEDULED | IN_OT | RECOVERY | COMPLETED
+  createdAt          DateTime @default(now())
+
+  @@index([hospitalId, scheduledStart, status])
+  @@schema("clinical")
+}
+
+model IcuFlowsheetRecord {
+  id                 String   @id @default(uuid())
+  hospitalId         String
+  admissionRefId     String
+  patientRefId       String
+  bedNumber          String
+  ventilatorMode     String?
+  fio2Percent        Int?
+  peepCmH2O          Int?
+  glasgowComaScale   Int      @default(15)
+  urineOutputMlHr    Int?
+  recordedByNurseId  String
+  recordedAt         DateTime @default(now())
+
+  @@index([admissionRefId, recordedAt])
+  @@schema("clinical")
+}
+
+model OutboxEvent {
+  id            String    @id @default(uuid())
+  eventType     String
+  eventVersion  String    @default("1.0")
+  producer      String    @default("clinical-emr-service")
+  correlationId String
+  hospitalId    String
+  partitionKey  String
+  payload       Json
+  status        String    @default("PENDING")
+  retryCount    Int       @default(0)
+  lastError     String?
+  occurredAt    DateTime  @default(now())
+  publishedAt   DateTime?
+
+  @@index([status, occurredAt])
+  @@schema("clinical")
+}
+
+model ProcessedEvent {
+  id            String   @id @default(uuid())
+  eventId       String
+  consumerGroup String
+  eventType     String
+  processedAt   DateTime @default(now())
+
+  @@unique([eventId, consumerGroup])
+  @@schema("clinical")
+}
+

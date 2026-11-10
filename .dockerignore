@@ -1,0 +1,10 @@
+node_modules
+dist
+frontend/dist
+.git
+.env
+*.log
+coverage
+backups
+terraform/.terraform
+

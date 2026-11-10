@@ -1,0 +1,242 @@
+// =============================================================================
+// PRISMA SCHEMA 5: BILLING, PAYMENTS, INSURANCE, AMBULANCE, ASSETS, FACILITY,
+//                  NOTIFICATIONS, DOCUMENTS (S3), ANALYTICS & INTEGRATIONS
+// Schema Owner: operations-billing-service (PostgreSQL schema: "operations_billing")
+// Encapsulates Services: [26] Billing, [27] Payment, [28] Insurance/TPA, [31] Ambulance,
+//                        [32] Asset Management, [33] Facility Management, [34] Notification,
+//                        [35] Document (S3), [37] Reporting & Analytics, [38] Integration
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  output          = "../../../node_modules/.prisma/operations-billing-client"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("OPERATIONS_DATABASE_URL")
+  schemas  = ["operations_billing"]
+}
+
+// --- Service 26: Billing & Service 27: Payment ---
+model Invoice {
+  id                  String               @id @default(uuid())
+  hospitalId          String
+  invoiceNumber       String               @unique // "INV-2026-000001"
+  patientRefId        String
+  encounterRefId      String?
+  admissionRefId      String?
+  subtotalMinor       BigInt               @default(0)
+  taxMinor            BigInt               @default(0)
+  discountMinor       BigInt               @default(0)
+  totalAmountMinor    BigInt               @default(0)
+  paidAmountMinor     BigInt               @default(0)
+  balanceDueMinor     BigInt               @default(0)
+  currency            String               @default("INR")
+  status              String               @default("OPEN") // OPEN | FINALIZED | PARTIALLY_PAID | PAID | CANCELLED
+  finalizedByUserId   String?
+  finalizedAt         DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  lineItems           InvoiceLineItem[]
+  payments            PaymentTransaction[]
+  insuranceClaims     InsuranceClaim[]
+
+  @@index([hospitalId, patientRefId, status])
+  @@schema("operations_billing")
+}
+
+model InvoiceLineItem {
+  id              String   @id @default(uuid())
+  invoiceId       String
+  sourceService   String   // APPOINTMENT | LAB | RADIOLOGY | PHARMACY | BED_TARIFF | PROCEDURE
+  sourceRefId     String
+  description     String
+  quantity        Int      @default(1)
+  unitPriceMinor  BigInt
+  totalMinor      BigInt
+  recordedAt      DateTime @default(now())
+
+  invoice         Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+
+  @@index([invoiceId])
+  @@schema("operations_billing")
+}
+
+model PaymentTransaction {
+  id                String   @id @default(uuid())
+  hospitalId        String
+  receiptNumber     String   @unique // "RCPT-2026-000001"
+  invoiceId         String
+  patientRefId      String
+  idempotencyKey    String   @unique // Enforces Rule 18 & Rule 27
+  amountMinor       BigInt
+  currency          String   @default("INR")
+  paymentMethod     String   // CASH | CARD | UPI | NEFT | INSURANCE_TPA
+  externalGatewayRef String?
+  status            String   @default("COMPLETED") // PENDING | COMPLETED | FAILED | REFUNDED
+  collectedByUserId String
+  paidAt            DateTime @default(now())
+
+  invoice           Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+
+  @@index([invoiceId, status])
+  @@schema("operations_billing")
+}
+
+// --- Service 28: Insurance / TPA ---
+model InsuranceClaim {
+  id                  String   @id @default(uuid())
+  hospitalId          String
+  claimNumber         String   @unique // "CLM-2026-0001"
+  invoiceId           String
+  patientRefId        String
+  tpaProviderName     String
+  policyNumber        String
+  preAuthApprovalCode String?
+  claimedAmountMinor  BigInt
+  approvedAmountMinor BigInt   @default(0)
+  status              String   @default("PREAUTH_SUBMITTED") // PREAUTH_SUBMITTED | PREAUTH_APPROVED | CLAIM_SETTLED | REJECTED
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  invoice             Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+
+  @@schema("operations_billing")
+}
+
+// --- Service 31: Ambulance, Service 32: Asset, Service 33: Facility ---
+model Ambulance {
+  id                String   @id @default(uuid())
+  hospitalId        String
+  vehicleNumber     String   @unique
+  ambulanceType     String   // ALS_CARDIAC | BLS_STANDARD | NEONATAL
+  driverName        String
+  driverPhone       String
+  paramedicName     String
+  status            String   @default("AVAILABLE") // AVAILABLE | DISPATCHED | RETURNING | MAINTENANCE
+  currentLat        Float?
+  currentLng        Float?
+  updatedAt         DateTime @updatedAt
+
+  @@schema("operations_billing")
+}
+
+model MedicalAsset {
+  id                  String   @id @default(uuid())
+  hospitalId          String
+  assetTag            String   @unique // "AST-VENT-001"
+  equipmentName       String
+  category            String   // VENTILATOR | DEFIBRILLATOR | INFUSION_PUMP | MONITOR | IMAGING
+  departmentRefCode   String
+  serialNumber        String   @unique
+  status              String   @default("OPERATIONAL") // OPERATIONAL | UNDER_MAINTENANCE | DECOMMISSIONED
+  nextCalibrationDate DateTime
+
+  @@schema("operations_billing")
+}
+
+model HousekeepingTask {
+  id              String    @id @default(uuid())
+  hospitalId      String
+  bedRefNumber    String
+  wardRefCode     String
+  taskType        String    @default("DISCHARGE_TERMINAL_CLEANING")
+  status          String    @default("PENDING") // PENDING | IN_PROGRESS | COMPLETED
+  assignedStaff   String?
+  createdAt       DateTime  @default(now())
+  completedAt     DateTime?
+
+  @@index([hospitalId, status])
+  @@schema("operations_billing")
+}
+
+// --- Service 34: Notification & Service 35: Document (AWS S3) ---
+model NotificationRecord {
+  id              String   @id @default(uuid())
+  hospitalId      String
+  recipientUserId String?
+  recipientPhone  String?
+  recipientEmail  String?
+  channel         String   // IN_APP | EMAIL | SMS
+  templateCode    String
+  subject         String
+  body            String
+  correlationId   String
+  status          String   @default("QUEUED") // QUEUED | DELIVERED | FAILED
+  isRead          Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  @@index([recipientUserId, isRead])
+  @@schema("operations_billing")
+}
+
+model DocumentRecord {
+  id                String   @id @default(uuid())
+  hospitalId        String
+  patientRefId      String
+  encounterRefId    String?
+  documentCategory  String   // LAB_REPORT | DISCHARGE_SUMMARY | CONSENT_FORM | INSURANCE_DOC | PRESCRIPTION_PDF
+  fileName          String
+  mimeType          String
+  fileSizeBytes     Int
+  s3Bucket          String
+  s3ObjectKey       String   @unique
+  kmsKeyArn         String?
+  checksumSha256    String
+  uploadedByUserId  String
+  retentionYears    Int      @default(7)
+  createdAt         DateTime @default(now())
+
+  @@index([hospitalId, patientRefId, documentCategory])
+  @@schema("operations_billing")
+}
+
+// --- Service 37: Analytics & Service 38: Integration ---
+model DailyHospitalMetricSnapshot {
+  id                     String   @id @default(uuid())
+  hospitalId             String
+  metricDate             DateTime
+  totalPatientsRegistered Int     @default(0)
+  opdConsultationsCount  Int      @default(0)
+  occupiedBedsCount      Int      @default(0)
+  labOrdersCompleted     Int      @default(0)
+  totalRevenueMinor      BigInt   @default(0)
+  updatedAt              DateTime @updatedAt
+
+  @@unique([hospitalId, metricDate])
+  @@schema("operations_billing")
+}
+
+model OutboxEvent {
+  id            String    @id @default(uuid())
+  eventType     String
+  eventVersion  String    @default("1.0")
+  producer      String    @default("operations-billing-service")
+  correlationId String
+  hospitalId    String
+  partitionKey  String
+  payload       Json
+  status        String    @default("PENDING")
+  retryCount    Int       @default(0)
+  lastError     String?
+  occurredAt    DateTime  @default(now())
+  publishedAt   DateTime?
+
+  @@index([status, occurredAt])
+  @@schema("operations_billing")
+}
+
+model ProcessedEvent {
+  id            String   @id @default(uuid())
+  eventId       String
+  consumerGroup String
+  eventType     String
+  processedAt   DateTime @default(now())
+
+  @@unique([eventId, consumerGroup])
+  @@schema("operations_billing")
+}
+

@@ -1,0 +1,247 @@
+// =============================================================================
+// PRISMA SCHEMA 1: IDENTITY, AUTHENTICATION, RBAC & TAMPER-EVIDENT AUDIT SERVICE
+// Schema Owner: identity-service (PostgreSQL schema: "identity")
+// Encapsulates Services: [2] Identity & Auth, [3] Authorization, [36] Audit
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  output          = "../../../node_modules/.prisma/identity-client"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("IDENTITY_DATABASE_URL")
+  schemas  = ["identity"]
+}
+
+enum UserStatus {
+  ACTIVE
+  LOCKED
+  SUSPENDED
+  PENDING_MFA
+  DEACTIVATED
+
+  @@schema("identity")
+}
+
+enum HospitalRoleCode {
+  SUPER_ADMIN
+  HOSPITAL_ADMIN
+  DEPARTMENT_ADMIN
+  DOCTOR
+  NURSE
+  COMPOUNDER
+  PHARMACIST
+  LAB_TECHNICIAN
+  RADIOLOGY_TECHNICIAN
+  RECEPTIONIST
+  BILLING_STAFF
+  HR
+  INVENTORY_MANAGER
+  ACCOUNTANT
+  AUDITOR
+  PATIENT
+
+  @@schema("identity")
+}
+
+model User {
+  id                  String             @id @default(uuid())
+  hospitalId          String
+  email               String             @unique
+  username            String             @unique
+  passwordHash        String
+  fullName            String
+  phone               String?
+  status              UserStatus         @default(ACTIVE)
+  mfaEnabled          Boolean            @default(false)
+  mfaSecretEncrypted  String?
+  failedLoginAttempts Int                @default(0)
+  lockedUntil         DateTime?
+  employeeRefId       String?            @unique
+  doctorRefId         String?            @unique
+  patientRefId        String?            @unique
+  departmentRefId     String?
+  lastLoginAt         DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  deletedAt           DateTime?
+
+  userRoles           UserRole[]
+  refreshTokens       RefreshToken[]
+  passwordResets      PasswordResetToken[]
+  sessions            LoginSession[]
+  auditLogs           AuditLog[]
+
+  @@index([hospitalId, status])
+  @@index([email])
+  @@schema("identity")
+}
+
+model Role {
+  id              String           @id @default(uuid())
+  code            HospitalRoleCode @unique
+  name            String
+  description     String
+  isSystemRole    Boolean          @default(true)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  @@schema("identity")
+}
+
+model Permission {
+  id              String           @id @default(uuid())
+  code            String           @unique // e.g., "clinical:note:sign", "billing:invoice:finalize"
+  resource        String
+  action          String
+  scope           String           @default("HOSPITAL") // HOSPITAL | DEPARTMENT | WARD | OWN
+  description     String
+  createdAt       DateTime         @default(now())
+
+  rolePermissions RolePermission[]
+
+  @@index([resource, action])
+  @@schema("identity")
+}
+
+model RolePermission {
+  id           String     @id @default(uuid())
+  roleId       String
+  permissionId String
+  createdAt    DateTime   @default(now())
+
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@schema("identity")
+}
+
+model UserRole {
+  id              String   @id @default(uuid())
+  userId          String
+  roleId          String
+  hospitalId      String
+  departmentScope String?  // Optional department-level ABAC restriction
+  wardScope       String?  // Optional ward-level ABAC restriction
+  assignedBy      String?
+  createdAt       DateTime @default(now())
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role            Role     @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, roleId, hospitalId])
+  @@index([userId, hospitalId])
+  @@schema("identity")
+}
+
+model RefreshToken {
+  id            String    @id @default(uuid())
+  userId        String
+  tokenHash     String    @unique
+  familyId      String    // Detects refresh token replay attacks
+  ipAddress     String?
+  userAgent     String?
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  replacedByTokenHash String?
+  createdAt     DateTime  @default(now())
+
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([familyId])
+  @@schema("identity")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@schema("identity")
+}
+
+model LoginSession {
+  id           String    @id @default(uuid())
+  userId       String
+  ipAddress    String?
+  userAgent    String?
+  active       Boolean   @default(true)
+  startedAt    DateTime  @default(now())
+  lastSeenAt   DateTime  @default(now())
+  terminatedAt DateTime?
+
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, active])
+  @@schema("identity")
+}
+
+// Append-only, hash-chained compliance audit table
+model AuditLog {
+  id            String   @id @default(uuid())
+  hospitalId    String
+  actorUserId   String?
+  actorRole     String?
+  serviceName   String
+  action        String   // e.g., "AUTH_LOGIN_SUCCESS", "CLINICAL_NOTE_SIGNED", "INVOICE_FINALIZED"
+  resourceType  String
+  resourceId    String
+  correlationId String
+  ipAddress     String?
+  metadataJson  Json?
+  previousHash  String
+  integrityHash String   @unique
+  occurredAt    DateTime @default(now())
+
+  actor         User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([hospitalId, occurredAt])
+  @@index([resourceType, resourceId])
+  @@index([correlationId])
+  @@schema("identity")
+}
+
+model OutboxEvent {
+  id            String    @id @default(uuid())
+  eventType     String
+  eventVersion  String    @default("1.0")
+  producer      String    @default("identity-service")
+  correlationId String
+  hospitalId    String
+  partitionKey  String
+  payload       Json
+  status        String    @default("PENDING") // PENDING | PUBLISHED | FAILED | DLQ
+  retryCount    Int       @default(0)
+  lastError     String?
+  occurredAt    DateTime  @default(now())
+  publishedAt   DateTime?
+
+  @@index([status, occurredAt])
+  @@schema("identity")
+}
+
+model ProcessedEvent {
+  id            String   @id @default(uuid())
+  eventId       String
+  consumerGroup String
+  eventType     String
+  processedAt   DateTime @default(now())
+
+  @@unique([eventId, consumerGroup])
+  @@schema("identity")
+}
+

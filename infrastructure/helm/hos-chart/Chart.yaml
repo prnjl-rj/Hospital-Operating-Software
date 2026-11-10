@@ -1,0 +1,15 @@
+apiVersion: v2
+name: hos-chart
+description: Enterprise Helm Chart for 500+ Bed Multispecialty Hospital Operating Software (HOS)
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - hospital
+  - healthcare
+  - microservices
+  - nestjs
+  - kafka
+  - redis
+  - postgresql
+

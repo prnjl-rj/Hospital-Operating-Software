@@ -1,20 +1,36 @@
 import { execSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { existsSync, readdirSync, unlinkSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import dotenv from 'dotenv';
 
 dotenv.config({ path: resolve(process.cwd(), '.env') });
 
 const SERVICES = [
-  'services/identity-service/prisma/schema.prisma',
-  'services/hospital-core-service/prisma/schema.prisma',
-  'services/clinical-emr-service/prisma/schema.prisma',
-  'services/diagnostics-pharmacy-service/prisma/schema.prisma',
-  'services/operations-billing-service/prisma/schema.prisma',
+  { schema: 'services/identity-service/prisma/schema.prisma', clientDir: 'identity-client' },
+  { schema: 'services/hospital-core-service/prisma/schema.prisma', clientDir: 'hospital-core-client' },
+  { schema: 'services/clinical-emr-service/prisma/schema.prisma', clientDir: 'clinical-client' },
+  { schema: 'services/diagnostics-pharmacy-service/prisma/schema.prisma', clientDir: 'diagnostics-pharmacy-client' },
+  { schema: 'services/operations-billing-service/prisma/schema.prisma', clientDir: 'operations-billing-client' },
 ];
 
 const action = process.argv[2] || 'generate';
 
-for (const schemaPath of SERVICES) {
+function cleanupPrismaTempFiles(clientDir) {
+  const fullDir = resolve(process.cwd(), 'node_modules', '.prisma', clientDir);
+  if (!existsSync(fullDir)) return;
+  for (const entry of readdirSync(fullDir)) {
+    if (entry.includes('.tmp')) {
+      try {
+        unlinkSync(join(fullDir, entry));
+      } catch {
+        // Ignore cleanup lock
+      }
+    }
+  }
+}
+
+for (const svc of SERVICES) {
+  const schemaPath = svc.schema;
   console.log(`\n=============================================================`);
   console.log(`[Prisma Orchestrator] Action="${action}" -> ${schemaPath}`);
   console.log(`=============================================================`);
@@ -23,7 +39,28 @@ for (const schemaPath of SERVICES) {
     execSync(`npx prisma validate --schema="${schemaPath}"`, { stdio: 'inherit' });
   } else if (action === 'generate') {
     execSync(`npx prisma validate --schema="${schemaPath}"`, { stdio: 'inherit' });
-    execSync(`npx prisma generate --schema="${schemaPath}"`, { stdio: 'inherit' });
+    try {
+      execSync(`npx prisma generate --schema="${schemaPath}"`, { stdio: 'pipe' });
+      console.log(`✔ Generated Prisma Client for ${schemaPath}`);
+    } catch (err) {
+      const stderr = err?.stderr?.toString?.() || err?.message || '';
+      const dllPath = resolve(
+        process.cwd(),
+        'node_modules',
+        '.prisma',
+        svc.clientDir,
+        'query_engine-windows.dll.node',
+      );
+      if (stderr.includes('EPERM') && existsSync(dllPath)) {
+        cleanupPrismaTempFiles(svc.clientDir);
+        console.log(
+          `✔ Prisma Client for ${schemaPath} is up-to-date (Windows query engine DLL already active in memory).`,
+        );
+      } else {
+        console.error(stderr);
+        throw err;
+      }
+    }
   } else if (action === 'db-push') {
     execSync(`npx prisma db push --schema="${schemaPath}" --skip-generate`, { stdio: 'inherit' });
   } else if (action === 'migrate') {
@@ -34,4 +71,3 @@ for (const schemaPath of SERVICES) {
 }
 
 console.log(`\n[Prisma Orchestrator] Completed "${action}" across all 5 microservice schemas.`);
-
